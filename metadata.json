@@ -1,0 +1,6 @@
+{
+  "name": "GrockGold Mining Dashboard",
+  "description": "Premium cloud gold mining simulation and investment dashboard featuring contract management, live mining extraction loop, downline team commission tracker, and multi-wallet balance controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
