@@ -4,28 +4,51 @@ import { UserAccount } from './types';
 function getSupabaseUrl(): string {
   try {
     // @ts-ignore
-    const url = import.meta.env?.VITE_SUPABASE_URL || (import.meta as any).env?.VITE_SUPABASE_URL;
-    if (url && typeof url === 'string' && url.trim() !== '' && url.startsWith('http')) {
+    const url =
+      import.meta.env?.VITE_SUPABASE_URL ||
+      (import.meta as any).env?.VITE_SUPABASE_URL;
+
+    if (
+      typeof url === 'string' &&
+      url.trim() !== '' &&
+      url.startsWith('http')
+    ) {
       return url.trim();
     }
-  } catch (e) {}
-  return 'https://qfhwprovgkjuiyiguxtn.supabase.co'
+  } catch (e) {
+    console.warn('Using fallback Supabase URL');
+  }
+
+  return 'https://qfhwprovgkjuiyiguxtn.supabase.co';
+}
 
 function getSupabaseKey(): string {
   try {
     // @ts-ignore
-    const key = import.meta.env?.VITE_SUPABASE_ANON_KEY || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-    if (key && typeof key === 'string' && key.trim() !== '' && key.trim().length > 20) {
+    const key =
+      import.meta.env?.VITE_SUPABASE_ANON_KEY ||
+      (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+
+    if (
+      typeof key === 'string' &&
+      key.trim().length > 20
+    ) {
       return key.trim();
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn('Using fallback Supabase Key');
+  }
+
   return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNsc251eG9paHJ6dXpkamlzZ2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwODEyOTksImV4cCI6MjA5OTY1NzI5OX0.aExtivj1uaDyNX7TxmjL1PQ_QK-6ylxVypD4VkyUNtQ';
 }
 
 const SUPABASE_URL = getSupabaseUrl();
 const SUPABASE_ANON_KEY = getSupabaseKey();
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY
+);
 
 /**
  * SQL Schema for Supabase SQL Editor:
