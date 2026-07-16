@@ -9,8 +9,7 @@ function getSupabaseUrl(): string {
       return url.trim();
     }
   } catch (e) {}
-  return 'https://clsnuxoihrzuzdjisgbm.supabase.co';
-}
+  return 'https://qfhwprovgkjuiyiguxtn.supabase.co'
 
 function getSupabaseKey(): string {
   try {
