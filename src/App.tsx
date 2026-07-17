@@ -54,7 +54,8 @@ import {
   Send,
   Briefcase,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  CheckCircle
 } from 'lucide-react';
 import { AppState, Transaction, Holder, CONFIG, UserAccount } from './types';
 import { TRANSLATIONS } from './translations';
@@ -63,7 +64,25 @@ import Modal from './components/Modal';
 import GoldMarketChart from './components/GoldMarketChart';
 import Leaderboard from './components/Leaderboard';
 import HomeSkeleton from './components/HomeSkeleton';
-import { saveAccountToSupabase, fetchAccountsFromSupabase } from './supabase';
+import AdminLayout from './components/AdminLayout';
+import {
+  supabase,
+  saveAccountToSupabase,
+  fetchAccountsFromSupabase,
+  registerUserInSupabase,
+  createDepositInSupabase,
+  createWithdrawalInSupabase,
+  updateProfileImageInSupabase,
+  updateUserSettingsInSupabase,
+  purchaseContractInSupabase,
+  claimWelcomeBonusInSupabase,
+  claimDailyRewardInSupabase,
+  updatePendingMiningRewardInSupabase,
+  resetAllDataInSupabase,
+  fetchGlobalConfig,
+  saveGlobalConfig,
+  updateGlobalConfig
+} from './supabase';
 
 // Initial dummy downline holders to populate Network structures
 const INITIAL_HOLDERS: Holder[] = [];
@@ -131,6 +150,19 @@ export default function App() {
   const [authScreen, setAuthScreen] = useState<'welcome' | 'login' | 'register' | 'forgot'>('welcome');
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
   const [currentAccount, setCurrentAccount] = useState<UserAccount | null>(null);
+  const [globalConfig, setGlobalConfig] = useState<any>({
+    pricePerUnit: 180000,
+    dailyRewardPercent: 4.0,
+    cappingPercent: 250,
+    minDeposit: 100000,
+    minWithdraw: 100000,
+    simulationSpeed: 1,
+    botsEnabled: true,
+    bankName: 'BCA',
+    bankNumber: '8402-1920-22',
+    bankHolder: 'PT GROCKGOLD INDONESIA',
+    usdtAddress: 'TYrN8xZ7p8asD89xHjasDJKH190Kash18a'
+  });
 
   // --- REGISTRATION FORM STATES ---
   const [regFullName, setRegFullName] = useState('');
@@ -201,6 +233,14 @@ export default function App() {
   // --- MISSION STATES ---
   const [missionModalOpen, setMissionModalOpen] = useState(false);
   const [claimedMissions, setClaimedMissions] = useState<string[]>([]);
+  const [claimedMissionsHistory, setClaimedMissionsHistory] = useState<Array<{ id: string; title: string; reward: number; timestamp: number }>>([
+    { id: 'hist_1', title: 'Registrasi Akun Berhasil', reward: 10000, timestamp: Date.now() - 3600000 * 48 },
+    { id: 'hist_2', title: 'Verifikasi Keamanan Dasar', reward: 5000, timestamp: Date.now() - 3600000 * 24 }
+  ]);
+  const [dailyTaskCheck, setDailyTaskCheck] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [dailyTaskVisit, setDailyTaskVisit] = useState(false);
+  const [dailyTaskClaimed, setDailyTaskClaimed] = useState(false);
 
   // --- INTEGRATED SHORTCUTS STATES ---
   const [spinTickets, setSpinTickets] = useState(5);
@@ -208,6 +248,8 @@ export default function App() {
   const [sharedReferral, setSharedReferral] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedBank, setCopiedBank] = useState(false);
+  const [copiedUSDT, setCopiedUSDT] = useState(false);
   const [luckySpinHistory, setLuckySpinHistory] = useState<Array<{ id: string; prize: string; date: number; success: boolean }>>([
     { id: '1', prize: 'Rp 15.000', date: Date.now() - 3600000 * 2.5, success: true },
     { id: '2', prize: 'Boost 5x', date: Date.now() - 3600000 * 5, success: true },
@@ -256,122 +298,77 @@ export default function App() {
 
   const t = TRANSLATIONS[language];
 
-  // --- LOAD PERSISTENT STATE ---
-  useEffect(() => {
-    const defaultAdmin: UserAccount = {
-      fullName: 'System Administrator',
-      username: 'admin',
-      email: 'admin@grockgold.com',
-      phone: '+6281234567890',
-      password: 'admin123',
-      referralCode: 'GGM-ADMIN',
-      invitedBy: null,
-      createdAt: Date.now(),
-      state: {
-        mainBalance: 0,
-        activeContracts: 0,
-        totalEarned: 0,
-        referralEarned: 0,
-        rebateEarned: 0,
-        lastClaimTime: 0,
-        welcomeBonusClaimed: false,
-        isLoggedIn: false,
-        username: 'admin',
-        holders: [],
-        goldProduction: 0,
-        cyclePercent: 0,
-        hasPurchased: false,
-        profileImage: null,
-        transactions: [],
-        pendingMiningReward: 0,
-        todayProfit: 0,
-        totalProfit: 0,
-      },
-      settings: {
-        language: 'id',
-        notificationsEnabled: true,
-        autoReinvest: false,
-      }
-    };
-
+  // --- ASYNC BACKGROUND SYNC FROM SUPABASE ---
+  const syncFromSupabase = async () => {
     try {
-      // 1. Try loading accounts from sessionStorage cache first (instant loading, <10ms)
-      const cachedAccounts = sessionStorage.getItem('grockgold_accounts_cache_v4');
-      const savedAccounts = cachedAccounts || localStorage.getItem('grockgold_accounts_v4');
-      let loadedAccounts: UserAccount[] = savedAccounts ? JSON.parse(savedAccounts) : [];
-      
-      // Seed default admin account if not exists to guarantee seamless login with all zeros
-      if (loadedAccounts.length === 0) {
-        loadedAccounts = [defaultAdmin];
-        localStorage.setItem('grockgold_accounts_v4', JSON.stringify(loadedAccounts));
+      const config = await fetchGlobalConfig();
+      if (config) {
+        setGlobalConfig(config);
+        updateGlobalConfig(config);
       }
-      setAccounts(loadedAccounts);
 
-      // 2. Load active session
-      const loggedInUsername = localStorage.getItem('grockgold_logged_in_username_v4');
-      if (loggedInUsername) {
-        const found = loadedAccounts.find(acc => acc.username.toLowerCase() === loggedInUsername.toLowerCase());
-        if (found) {
-          setCurrentAccount(found);
-          setState({
-            ...found.state,
-            isLoggedIn: true,
-          });
-          if (found.settings?.language) {
-            setLanguage(found.settings.language);
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Error loading account list', e);
-    }
+      const supabaseAccounts = await fetchAccountsFromSupabase();
+      if (supabaseAccounts) {
+        setAccounts(supabaseAccounts);
+        localStorage.setItem('grockgold_accounts_v4', JSON.stringify(supabaseAccounts));
+        sessionStorage.setItem('grockgold_accounts_cache_v4', JSON.stringify(supabaseAccounts));
 
-    // Load language preference fallback
-    const savedLang = localStorage.getItem('grockgold_lang');
-    if (savedLang === 'en' || savedLang === 'id') {
-      setLanguage(savedLang as 'id' | 'en');
-    }
-
-    // --- ASYNC BACKGROUND SYNC FROM SUPABASE ---
-    const syncFromSupabase = async () => {
-      try {
-        const supabaseAccounts = await fetchAccountsFromSupabase();
-        if (supabaseAccounts) {
-          // If admin isn't in Supabase, seed it now so it exists in both environments
-          const hasAdmin = supabaseAccounts.some(acc => acc.username.toLowerCase() === 'admin');
-          if (!hasAdmin) {
-            await saveAccountToSupabase(defaultAdmin);
-            supabaseAccounts.push(defaultAdmin);
-          }
-
-          setAccounts(supabaseAccounts);
-          localStorage.setItem('grockgold_accounts_v4', JSON.stringify(supabaseAccounts));
-          sessionStorage.setItem('grockgold_accounts_cache_v4', JSON.stringify(supabaseAccounts));
-
-          // Re-sync current active logged-in user if applicable
-          const loggedInUsername = localStorage.getItem('grockgold_logged_in_username_v4');
-          if (loggedInUsername) {
-            const found = supabaseAccounts.find(acc => acc.username.toLowerCase() === loggedInUsername.toLowerCase());
-            if (found) {
-              setCurrentAccount(found);
-              setState(prev => ({
-                ...prev,
-                ...found.state,
-                isLoggedIn: true,
-              }));
-              if (found.settings?.language) {
-                setLanguage(found.settings.language);
-              }
+        // Re-sync current active logged-in user if applicable
+        const loggedInUsername = localStorage.getItem('grockgold_logged_in_username_v4');
+        if (loggedInUsername) {
+          const found = supabaseAccounts.find(acc => acc.username.toLowerCase() === loggedInUsername.toLowerCase());
+          if (found) {
+            setCurrentAccount(found);
+            setState(prev => ({
+              ...prev,
+              ...found.state,
+              isLoggedIn: true,
+            }));
+            if (found.settings?.language) {
+              setLanguage(found.settings.language);
             }
           }
         }
-      } catch (err) {
-        console.warn('Supabase not fully configured yet or schema missing. Continuing with LocalStorage fallback.', err);
-      } finally {
-        setIsSyncing(false);
       }
-    };
+    } catch (err) {
+      console.warn('Supabase not fully configured yet or schema missing.', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // --- LOAD PERSISTENT STATE & SETUP REALTIME ---
+  useEffect(() => {
+    // Initial Sync
     syncFromSupabase();
+
+    // Setup Realtime PostgreSQL Changes listener for the 5 relational tables
+    const dbChannel = supabase
+      .channel('schema-db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        syncFromSupabase();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deposits' }, () => {
+        syncFromSupabase();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawals' }, () => {
+        syncFromSupabase();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts' }, () => {
+        syncFromSupabase();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+        syncFromSupabase();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'global_config' }, () => {
+        syncFromSupabase();
+      })
+      .subscribe();
+
+    // Cleanup subscription on unmount
+    return () => {
+      supabase.removeChannel(dbChannel);
+    };
   }, []);
 
   // --- PARSE REFERRAL PARAMETER FROM URL ---
@@ -627,10 +624,29 @@ export default function App() {
   }, [state.lastClaimTime]);
 
   // --- HELPER METRICS ---
+  // --- DYNAMIC WALLET METRICS (PERFECTLY SYNCHRONIZED WITH THE DATABASE TRANSACTIONS) ---
+  const miningProfit = (state.transactions || [])
+    .filter(t => t.type === 'reward')
+    .reduce((sum, item) => sum + item.amount, 0);
+
+  const referralReward = (state.transactions || [])
+    .filter(t => t.type === 'referral')
+    .reduce((sum, item) => sum + item.amount, 0);
+
+  const rebateReward = (state.transactions || [])
+    .filter(t => t.type === 'rebate')
+    .reduce((sum, item) => sum + item.amount, 0);
+
+  const bonusReward = (state.transactions || [])
+    .filter(t => t.type === 'welcome_bonus' || t.type === 'bonus')
+    .reduce((sum, item) => sum + item.amount, 0);
+
+  const totalEarned = miningProfit + referralReward + rebateReward + bonusReward;
+
   const totalPortfolioValue = state.activeContracts * CONFIG.PRICE_PER_UNIT;
   const maxPossibleEarnings = totalPortfolioValue * CONFIG.CAPPING_PERCENT;
-  const cappingRatio = maxPossibleEarnings > 0 ? Math.min((state.totalEarned / maxPossibleEarnings) * 100, 100) : 0;
-  const isCappedLimitMet = state.totalEarned >= maxPossibleEarnings && maxPossibleEarnings > 0;
+  const cappingRatio = maxPossibleEarnings > 0 ? Math.min((totalEarned / maxPossibleEarnings) * 100, 100) : 0;
+  const isCappedLimitMet = totalEarned >= maxPossibleEarnings && maxPossibleEarnings > 0;
   const dailyYield = totalPortfolioValue * CONFIG.DAILY_REWARD_PERCENT;
 
   // Booster Cooldown Helpers (24 hours cooldown)
@@ -1010,7 +1026,23 @@ export default function App() {
       return;
     }
 
-    const personalReferralCode = 'GGM-' + username.toUpperCase();
+    // Generate next sequential Member ID format GGM-0001, GGM-0002, etc.
+    let nextNum = 1;
+    const ggmCodes = accounts
+      .map(acc => acc.referralCode || '')
+      .filter(code => code.startsWith('GGM-'));
+    
+    const numericParts = ggmCodes
+      .map(code => {
+        const numStr = code.substring(4);
+        return /^\d+$/.test(numStr) ? parseInt(numStr, 10) : 0;
+      })
+      .filter(num => num > 0);
+    
+    if (numericParts.length > 0) {
+      nextNum = Math.max(...numericParts) + 1;
+    }
+    const personalReferralCode = 'GGM-' + String(nextNum).padStart(4, '0');
 
     let sponsorUsername: string | null = null;
     let foundSponsor: UserAccount | null = null;
@@ -1067,55 +1099,23 @@ export default function App() {
       }
     };
 
-    const updatedAccounts = [...accounts, newAccount];
+    registerUserInSupabase(newAccount).then(success => {
+      if (success) {
+        setRegFullName('');
+        setRegUsername('');
+        setRegEmail('');
+        setRegPhone('');
+        setRegPassword('');
+        setRegConfirmPassword('');
+        setRegReferralCode('');
+        setRegAgreed(false);
 
-    if (foundSponsor) {
-      const newHolder: Holder = {
-        id: 'H00' + (foundSponsor.state.holders.length + 1),
-        name: fullName,
-        contracts: 0,
-        joinDate: Date.now()
-      };
-
-      const sponsorIndex = updatedAccounts.findIndex(acc => acc.username.toLowerCase() === foundSponsor!.username.toLowerCase());
-      if (sponsorIndex !== -1) {
-        updatedAccounts[sponsorIndex] = {
-          ...updatedAccounts[sponsorIndex],
-          state: {
-            ...updatedAccounts[sponsorIndex].state,
-            holders: [newHolder, ...updatedAccounts[sponsorIndex].state.holders],
-          }
-        };
+        triggerModal(language === 'id' ? '🎉 Akun berhasil dibuat! Silakan masuk.' : '🎉 Account created successfully! Please sign in.', 'success');
+        setAuthScreen('login');
+      } else {
+        triggerModal(language === 'id' ? '❌ Gagal membuat akun. Username atau Email mungkin sudah terdaftar.' : '❌ Failed to create account.', 'danger');
       }
-    }
-
-    setAccounts(updatedAccounts);
-    try {
-      localStorage.setItem('grockgold_accounts_v4', JSON.stringify(updatedAccounts));
-      // Save new account to Supabase
-      saveAccountToSupabase(newAccount);
-      // Save sponsor's updated account to Supabase if applicable
-      if (foundSponsor) {
-        const updatedSponsor = updatedAccounts.find(acc => acc.username.toLowerCase() === foundSponsor!.username.toLowerCase());
-        if (updatedSponsor) {
-          saveAccountToSupabase(updatedSponsor);
-        }
-      }
-    } catch (e) {
-      console.error('Error saving accounts', e);
-    }
-
-    setRegFullName('');
-    setRegUsername('');
-    setRegEmail('');
-    setRegPhone('');
-    setRegPassword('');
-    setRegConfirmPassword('');
-    setRegReferralCode('');
-    setRegAgreed(false);
-
-    triggerModal(language === 'id' ? '🎉 Akun berhasil dibuat! Silakan masuk.' : '🎉 Account created successfully! Please sign in.', 'success');
-    setAuthScreen('login');
+    });
   };
 
   const handleChangePassword = () => {
@@ -1297,6 +1297,36 @@ export default function App() {
     }, 2000);
   };
 
+  const handleCopyBankNumber = () => {
+    const num = globalConfig?.bankNumber || '8402-1920-22';
+    navigator.clipboard.writeText(num);
+    setCopiedBank(true);
+    triggerModal(
+      language === 'id' 
+        ? '✅ Nomor rekening bank berhasil disalin!' 
+        : '✅ Bank account number copied successfully!', 
+      'success'
+    );
+    setTimeout(() => {
+      setCopiedBank(false);
+    }, 2000);
+  };
+
+  const handleCopyUSDTAddress = () => {
+    const addr = globalConfig?.usdtAddress || 'TYrN8xZ7p8asD89xHjasDJKH190Kash18a';
+    navigator.clipboard.writeText(addr);
+    setCopiedUSDT(true);
+    triggerModal(
+      language === 'id' 
+        ? '✅ Alamat USDT berhasil disalin!' 
+        : '✅ USDT address copied successfully!', 
+      'success'
+    );
+    setTimeout(() => {
+      setCopiedUSDT(false);
+    }, 2000);
+  };
+
   const handleTapBooster = () => {
     if (state.activeContracts === 0) {
       triggerModal(
@@ -1369,36 +1399,28 @@ export default function App() {
       return;
     }
 
-    // Reward dihitung berdasarkan nilai kontrak aktif: Daily Reward = Nilai Kontrak × 4%
+    // Reward dihitung berdasarkan nilai kontrak aktif: Daily Reward = Nilai Kontrak × Daily Yield (%)
     const contractValue = state.activeContracts * CONFIG.PRICE_PER_UNIT;
-    const rewardAmount = contractValue * 0.04;
+    const rewardAmount = contractValue * CONFIG.DAILY_REWARD_PERCENT;
     const claimAmountRounded = Math.round(rewardAmount);
 
-    const newTx: Transaction = {
-      id: 'CLM-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-      type: 'reward',
-      amount: claimAmountRounded,
-      date: Date.now(),
-      description: language === 'id' ? 'Klaim Reward (4%)' : 'Claim Reward (4%)',
-    };
+    if (!currentAccount) return;
 
-    updateState(prev => ({
-      ...prev,
-      mainBalance: prev.mainBalance + rewardAmount,
-      totalEarned: prev.totalEarned + rewardAmount,
-      todayProfit: (prev.todayProfit || 0) + rewardAmount,
-      totalProfit: (prev.totalProfit || 0) + rewardAmount,
-      pendingMiningReward: 0,
-      lastClaimTime: now,
-      transactions: [newTx, ...prev.transactions],
-    }), true);
-
-    triggerModal(
-      language === 'id'
-        ? `✅ Berhasil mengklaim reward harian sebesar Rp ${claimAmountRounded.toLocaleString('id-ID')}!`
-        : `✅ Successfully claimed daily reward of Rp ${claimAmountRounded.toLocaleString('id-ID')}!`,
-      'success'
-    );
+    claimDailyRewardInSupabase(currentAccount.username, claimAmountRounded).then(success => {
+      if (success) {
+        triggerModal(
+          language === 'id'
+            ? `✅ Berhasil mengklaim reward harian sebesar Rp ${claimAmountRounded.toLocaleString('id-ID')}!`
+            : `✅ Successfully claimed daily reward of Rp ${claimAmountRounded.toLocaleString('id-ID')}!`,
+          'success'
+        );
+      } else {
+        triggerModal(
+          language === 'id' ? '❌ Gagal mengklaim reward harian.' : '❌ Failed to claim daily reward.',
+          'danger'
+        );
+      }
+    });
   };
 
   // --- DEPOSIT FLOW ---
@@ -1420,35 +1442,30 @@ export default function App() {
     if (numeric < CONFIG.MIN_DEPOSIT) {
       triggerModal(
         language === 'id'
-          ? `💰 Minimal deposit adalah Rp ${CONFIG.MIN_DEPOSIT.toLocaleString('id-ID')}`
-          : `💰 Minimum deposit is Rp ${CONFIG.MIN_DEPOSIT.toLocaleString('id-ID')}`,
+          ? `Minimal deposit adalah Rp${CONFIG.MIN_DEPOSIT.toLocaleString('id-ID')}.`
+          : `Minimum deposit is Rp ${CONFIG.MIN_DEPOSIT.toLocaleString('id-ID')}.`,
         'warning'
       );
       return;
     }
 
-    const newTx: Transaction = {
-      id: 'DEP-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-      type: 'deposit',
-      amount: numeric,
-      date: Date.now(),
-      description: language === 'id' ? 'Deposit via Transfer Instan' : 'Deposit via Instant Transfer',
-    };
+    if (!currentAccount) return;
+    const depId = 'DEP-' + Math.random().toString(36).substring(2, 9).toUpperCase();
 
-    updateState(prev => ({
-      ...prev,
-      mainBalance: prev.mainBalance + numeric,
-      transactions: [newTx, ...prev.transactions],
-    }), true);
-
-    setDepositValue('');
-    triggerModal(
-      language === 'id'
-        ? `✅ Deposit Rp ${numeric.toLocaleString('id-ID')} berhasil masuk ke saldo utama!`
-        : `✅ Deposit of Rp ${numeric.toLocaleString('id-ID')} successfully added to main balance!`,
-      'success'
-    );
-    setCurrentTab('wallet');
+    createDepositInSupabase(depId, currentAccount.username, numeric, 'Instant Transfer', null).then(success => {
+      if (success) {
+        setDepositValue('');
+        triggerModal(
+          language === 'id'
+            ? `⏳ Permintaan deposit sebesar Rp ${numeric.toLocaleString('id-ID')} telah dikirim dan sedang menunggu persetujuan admin!`
+            : `⏳ Deposit request of Rp ${numeric.toLocaleString('id-ID')} is submitted and pending admin approval!`,
+          'success'
+        );
+        setCurrentTab('wallet');
+      } else {
+        triggerModal(language === 'id' ? '❌ Gagal mengirim permintaan deposit.' : '❌ Failed to submit deposit request.', 'danger');
+      }
+    });
   };
 
   // --- WITHDRAW FLOW ---
@@ -1473,8 +1490,8 @@ export default function App() {
     if (amount < CONFIG.MIN_WITHDRAW) {
       triggerModal(
         language === 'id' 
-          ? `❌ Minimal penarikan Rp ${CONFIG.MIN_WITHDRAW.toLocaleString('id-ID')}` 
-          : `❌ Minimum withdrawal is Rp ${CONFIG.MIN_WITHDRAW.toLocaleString('id-ID')}`,
+          ? `Minimal penarikan adalah Rp${CONFIG.MIN_WITHDRAW.toLocaleString('id-ID')}.` 
+          : `Minimum withdrawal is Rp ${CONFIG.MIN_WITHDRAW.toLocaleString('id-ID')}.`,
         'warning'
       );
       return;
@@ -1496,29 +1513,22 @@ export default function App() {
       return;
     }
 
-    const newTx: Transaction = {
-      id: 'WD-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-      type: 'withdraw',
-      amount: amount,
-      date: Date.now(),
-      description: language === 'id' 
-        ? `Penarikan ke ${withdrawBank} - ${withdrawAccount}` 
-        : `Withdrawal to ${withdrawBank} - ${withdrawAccount}`,
-    };
+    if (!currentAccount) return;
+    const wdId = 'WD-' + Math.random().toString(36).substring(2, 9).toUpperCase();
 
-    updateState(prev => ({
-      ...prev,
-      mainBalance: prev.mainBalance - amount,
-      transactions: [newTx, ...prev.transactions],
-    }), true);
-
-    setWithdrawModalOpen(false);
-    triggerModal(
-      language === 'id'
-        ? `✅ Penarikan Rp ${amount.toLocaleString('id-ID')} ke rekening ${withdrawBank} ${withdrawAccount} sedang diproses!`
-        : `✅ Withdrawal of Rp ${amount.toLocaleString('id-ID')} to ${withdrawBank} ${withdrawAccount} is being processed!`,
-      'success'
-    );
+    createWithdrawalInSupabase(wdId, currentAccount.username, amount, withdrawBank, withdrawAccount, currentAccount.fullName).then(success => {
+      if (success) {
+        setWithdrawModalOpen(false);
+        triggerModal(
+          language === 'id'
+            ? `⏳ Permintaan penarikan Rp ${amount.toLocaleString('id-ID')} ke rekening ${withdrawBank} ${withdrawAccount} sedang diproses menunggu persetujuan admin!`
+            : `⏳ Withdrawal request of Rp ${amount.toLocaleString('id-ID')} to ${withdrawBank} ${withdrawAccount} submitted. Pending admin approval!`,
+          'success'
+        );
+      } else {
+        triggerModal(language === 'id' ? '❌ Gagal mengajukan penarikan.' : '❌ Failed to submit withdrawal request.', 'danger');
+      }
+    });
   };
 
   // --- TRANSFER FLOW ---
@@ -1605,140 +1615,26 @@ export default function App() {
     }
 
     const confirmAction = () => {
-      const newTx: Transaction = {
-        id: 'CON-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-        type: 'withdraw',
-        amount: cost,
-        date: Date.now(),
-        description: language === 'id'
-          ? `Pembelian ${contractQty} Unit Kontrak Emas`
-          : `Purchase of ${contractQty} Gold Contract Units`,
-      };
+      if (!currentAccount) return;
 
-      // Add new simulated holder to downlines optionally to keep simulation active
-      const simulatedNewHolder: Holder = {
-        id: 'H00' + (state.holders.length + 1),
-        name: 'Investor #' + Math.floor(100 + Math.random() * 900),
-        contracts: Math.floor(1 + Math.random() * 3),
-        joinDate: Date.now()
-      };
-
-      // Distribute multi-level referral commissions to sponsors in accounts list
-      const updatedAccounts = [...accounts];
-      
-      // Level 1 Commission (10%)
-      const level1Sponsor = currentAccount?.invitedBy;
-      if (level1Sponsor) {
-        const l1Index = updatedAccounts.findIndex(acc => acc.username.toLowerCase() === level1Sponsor.toLowerCase());
-        if (l1Index !== -1) {
-          const l1Comm = Math.floor(cost * 0.10);
-          const l1Tx: Transaction = {
-            id: 'REF1-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-            type: 'reward',
-            amount: l1Comm,
-            date: Date.now(),
-            description: language === 'id'
-              ? `Komisi L1: Pembelian oleh ${currentAccount?.username}`
-              : `L1 Commission: Purchase by ${currentAccount?.username}`,
-          };
-          
-          const sponsorAcc = updatedAccounts[l1Index];
-          const updatedHolders = sponsorAcc.state.holders.map(h => {
-            if (h.name.toLowerCase() === currentAccount?.fullName.toLowerCase()) {
-              return { ...h, contracts: h.contracts + contractQty };
-            }
-            return h;
-          });
-          
-          updatedAccounts[l1Index] = {
-            ...sponsorAcc,
-            state: {
-              ...sponsorAcc.state,
-              mainBalance: sponsorAcc.state.mainBalance + l1Comm,
-              referralEarned: sponsorAcc.state.referralEarned + l1Comm,
-              holders: updatedHolders,
-              transactions: [l1Tx, ...sponsorAcc.state.transactions]
-            }
-          };
-          
-          // Level 2 Commission (3%)
-          const level2Sponsor = sponsorAcc.invitedBy;
-          if (level2Sponsor) {
-            const l2Index = updatedAccounts.findIndex(acc => acc.username.toLowerCase() === level2Sponsor.toLowerCase());
-            if (l2Index !== -1) {
-              const l2Comm = Math.floor(cost * 0.03);
-              const l2Tx: Transaction = {
-                id: 'REF2-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-                type: 'reward',
-                amount: l2Comm,
-                date: Date.now(),
-                description: language === 'id'
-                  ? `Komisi L2: Pembelian oleh ${currentAccount?.username}`
-                  : `L2 Commission: Purchase by ${currentAccount?.username}`,
-              };
-              
-              const sponsorAcc2 = updatedAccounts[l2Index];
-              updatedAccounts[l2Index] = {
-                ...sponsorAcc2,
-                state: {
-                  ...sponsorAcc2.state,
-                  mainBalance: sponsorAcc2.state.mainBalance + l2Comm,
-                  referralEarned: sponsorAcc2.state.referralEarned + l2Comm,
-                  transactions: [l2Tx, ...sponsorAcc2.state.transactions]
-                }
-              };
-              
-              // Level 3 Commission (2%)
-              const level3Sponsor = sponsorAcc2.invitedBy;
-              if (level3Sponsor) {
-                const l3Index = updatedAccounts.findIndex(acc => acc.username.toLowerCase() === level3Sponsor.toLowerCase());
-                if (l3Index !== -1) {
-                  const l3Comm = Math.floor(cost * 0.02);
-                  const l3Tx: Transaction = {
-                    id: 'REF3-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-                    type: 'reward',
-                    amount: l3Comm,
-                    date: Date.now(),
-                    description: language === 'id'
-                      ? `Komisi L3: Pembelian oleh ${currentAccount?.username}`
-                      : `L3 Commission: Purchase by ${currentAccount?.username}`,
-                  };
-                  
-                  const sponsorAcc3 = updatedAccounts[l3Index];
-                  updatedAccounts[l3Index] = {
-                    ...sponsorAcc3,
-                    state: {
-                      ...sponsorAcc3.state,
-                      mainBalance: sponsorAcc3.state.mainBalance + l3Comm,
-                      referralEarned: sponsorAcc3.state.referralEarned + l3Comm,
-                      transactions: [l3Tx, ...sponsorAcc3.state.transactions]
-                    }
-                  };
-                }
-              }
-            }
-          }
+      purchaseContractInSupabase(currentAccount.username, contractQty, CONFIG.PRICE_PER_UNIT).then(success => {
+        if (success) {
+          triggerModal(
+            language === 'id'
+              ? `🎉 Berhasil membeli ${contractQty} unit Stock Contract!`
+              : `🎉 Successfully purchased ${contractQty} Stock Contract units!`,
+            'success'
+          );
+          setContractQty(1);
+        } else {
+          triggerModal(
+            language === 'id'
+              ? '❌ Gagal melakukan pembelian kontrak.'
+              : '❌ Failed to complete contract purchase.',
+            'danger'
+          );
         }
-      }
-
-      setAccounts(updatedAccounts);
-
-      updateState(prev => ({
-        ...prev,
-        mainBalance: prev.mainBalance - cost,
-        activeContracts: prev.activeContracts + contractQty,
-        hasPurchased: true,
-        holders: [simulatedNewHolder, ...prev.holders],
-        transactions: [newTx, ...prev.transactions],
-      }), true);
-
-      triggerModal(
-        language === 'id'
-          ? `🎉 Berhasil membeli ${contractQty} unit Stock Contract!`
-          : `🎉 Successfully purchased ${contractQty} Stock Contract units!`,
-        'success'
-      );
-      setContractQty(1);
+      });
     };
 
     triggerModal(
@@ -1829,23 +1725,18 @@ export default function App() {
       return;
     }
 
-    const newTx: Transaction = {
-      id: 'BON-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-      type: 'reward',
-      amount: CONFIG.WELCOME_BONUS_AMOUNT,
-      date: Date.now(),
-      description: 'Welcome Bonus Reward',
-    };
+    if (!currentAccount) return;
 
-    updateState(prev => ({
-      ...prev,
-      mainBalance: prev.mainBalance + CONFIG.WELCOME_BONUS_AMOUNT,
-      totalEarned: prev.totalEarned + CONFIG.WELCOME_BONUS_AMOUNT,
-      welcomeBonusClaimed: true,
-      transactions: [newTx, ...prev.transactions],
-    }));
-
-    triggerModal(t.welcomeBonusClaimedSuccess, 'success');
+    claimWelcomeBonusInSupabase(currentAccount.username).then(success => {
+      if (success) {
+        triggerModal(t.welcomeBonusClaimedSuccess, 'success');
+      } else {
+        triggerModal(
+          language === 'id' ? '❌ Gagal mengklaim Welcome Bonus.' : '❌ Failed to claim Welcome Bonus.',
+          'danger'
+        );
+      }
+    });
   };
 
   // --- LUCKY SPIN HANDLER ---
@@ -1930,6 +1821,10 @@ export default function App() {
     }));
 
     setClaimedMissions(prev => [...prev, missionId]);
+    setClaimedMissionsHistory(prev => [
+      { id: 'hist_' + Math.random().toString(36).substring(2, 9).toUpperCase(), title, reward: rewardValue, timestamp: Date.now() },
+      ...prev
+    ]);
 
     triggerModal(
       language === 'id'
@@ -1976,8 +1871,32 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* CORE APPLICATION CONTAINER */}
-      <div className="w-full max-w-[425px] min-h-screen bg-[#050212]/95 border-x border-purple-950/20 shadow-2xl relative flex flex-col pb-24">
+      {/* RENDER FULL-SCREEN ADMIN CONSOLE IF LOGGED IN AS ADMIN, ELSE STANDARD USER INTERFACE */}
+      {state.isLoggedIn && currentAccount?.username?.toLowerCase() === 'admin' ? (
+        <div className="w-full min-h-screen bg-slate-950">
+          <AdminLayout
+            accounts={accounts}
+            setAccounts={setAccounts}
+            currentAccount={currentAccount}
+            setCurrentAccount={setCurrentAccount}
+            saveAccountToSupabase={saveAccountToSupabase}
+            language={language}
+            triggerModal={triggerModal}
+            updateState={updateState}
+            onLogout={handleLogout}
+            globalConfig={globalConfig}
+            onSaveGlobalConfig={async (newConfig: any) => {
+              const success = await saveGlobalConfig(newConfig);
+              if (success) {
+                setGlobalConfig(newConfig);
+                updateGlobalConfig(newConfig);
+              }
+              return success;
+            }}
+          />
+        </div>
+      ) : (
+        <div className="w-full max-w-[425px] min-h-screen bg-[#050212]/95 border-x border-purple-950/20 shadow-2xl relative flex flex-col pb-24">
         
         {/* SIDEBAR NAVIGATION DRAWER */}
         <AnimatePresence>
@@ -2025,7 +1944,11 @@ export default function App() {
                       </label>
                     </div>
                     <div className="text-sm font-extrabold text-white uppercase">{state.username}</div>
-                    <div className="text-[10px] text-purple-300/70 font-mono mt-0.5">ID: GGM-ADMIN001</div>
+                    {state.username.toLowerCase() !== 'admin' && (
+                      <div className="text-[10px] text-purple-300/70 font-mono mt-0.5">
+                        ID: {currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase())}
+                      </div>
+                    )}
                   </div>
 
                   {/* Sidebar Menu Items */}
@@ -2074,7 +1997,7 @@ export default function App() {
                       <div className="flex flex-col gap-1">
                         {[
                           { id: 'reward', label: t.rewards, icon: Gift },
-                          { id: 'referral', label: t.referral, icon: Users },
+                          ...(state.username.toLowerCase() !== 'admin' ? [{ id: 'referral', label: t.referral, icon: Users }] : []),
                           { id: 'transactions', label: language === 'id' ? 'Riwayat Transaksi' : 'Transaction History', icon: History },
                           { id: 'notifications', label: language === 'id' ? 'Notifikasi' : 'Notifications', icon: Bell },
                         ].map((item) => {
@@ -2107,12 +2030,18 @@ export default function App() {
                         {language === 'id' ? 'PENGATURAN TERMINAL' : 'TERMINAL SETTINGS'}
                       </div>
                       <div className="flex flex-col gap-1">
-                        {[
-                          { id: 'settings', label: language === 'id' ? 'Pengaturan' : 'Settings', icon: Settings },
-                          { id: 'language', label: language === 'id' ? 'Ubah Bahasa' : 'Change Language', icon: Globe, action: true },
-                          { id: 'help', label: language === 'id' ? 'Bantuan FAQ' : 'Help & FAQ', icon: HelpCircle },
-                          { id: 'about', label: language === 'id' ? 'Tentang Kami' : 'About Us', icon: Info },
-                        ].map((item) => {
+                        {(() => {
+                          const items = [
+                            { id: 'settings', label: language === 'id' ? 'Pengaturan' : 'Settings', icon: Settings },
+                            { id: 'language', label: language === 'id' ? 'Ubah Bahasa' : 'Change Language', icon: Globe, action: true },
+                            { id: 'help', label: language === 'id' ? 'Bantuan FAQ' : 'Help & FAQ', icon: HelpCircle },
+                            { id: 'about', label: language === 'id' ? 'Tentang Kami' : 'About Us', icon: Info },
+                          ];
+                          if (currentAccount?.username?.toLowerCase() === 'admin') {
+                            items.push({ id: 'admin', label: 'Admin Panel', icon: ShieldCheck });
+                          }
+                          return items;
+                        })().map((item) => {
                           const Icon = item.icon;
                           const isActive = currentTab === item.id;
                           return (
@@ -2120,7 +2049,7 @@ export default function App() {
                               key={item.id}
                               onClick={() => {
                                 setIsSidebarOpen(false);
-                                if (item.action) {
+                                if ('action' in item && item.action) {
                                   toggleLanguage();
                                   triggerModal(
                                     language === 'id'
@@ -2951,6 +2880,202 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* DAILY MISSION INTERACTIVE CARD */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-[#0c051a] via-[#050212] to-[#010105] border border-cyan-500/20 rounded-3xl p-5 shadow-xl mt-4">
+                      {/* Glow elements */}
+                      <div className="absolute -top-10 -right-10 w-24 h-24 bg-cyan-500/10 rounded-full blur-xl pointer-events-none" />
+                      <div className="absolute -bottom-6 -left-6 w-20 h-20 bg-emerald-500/5 rounded-full blur-xl pointer-events-none" />
+
+                      {/* Header */}
+                      <div className="flex justify-between items-center mb-4 relative z-10">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/25 flex items-center justify-center">
+                            <Target className="w-4 h-4 text-cyan-400 animate-pulse" />
+                          </div>
+                          <div>
+                            <h3 className="text-xs font-black text-white uppercase tracking-wider leading-none">
+                              {language === 'id' ? 'Misi Harian' : 'Daily Missions'}
+                            </h3>
+                            <span className="text-[8px] text-slate-500 font-bold font-mono tracking-wide">3 SIMPLE TASKS FOR INSTANT REWARD</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[7.5px] font-bold text-slate-500 block uppercase leading-none mb-0.5 font-sans">EST. VALUE</span>
+                          <span className="text-[11px] font-black text-emerald-400 font-mono">Rp 5.000</span>
+                        </div>
+                      </div>
+
+                      {/* Tasks List */}
+                      <div className="space-y-2.5 mb-4 relative z-10">
+                        {/* Task 1: Log in today */}
+                        <div className="p-2.5 rounded-2xl bg-black/45 border border-white/5 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-extrabold text-slate-100 block truncate">
+                                {language === 'id' ? 'Masuk Hari Ini' : 'Log in Today'}
+                              </span>
+                              <span className="text-[7.5px] text-slate-500 block">
+                                {language === 'id' ? 'Mulai sesi harian Anda' : 'Start your daily terminal session'}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-[8px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-black font-mono">
+                            DONE
+                          </span>
+                        </div>
+
+                        {/* Task 2: Check Status */}
+                        <div className="p-2.5 rounded-2xl bg-black/45 border border-white/5 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                              dailyTaskCheck 
+                                ? 'bg-emerald-500/10 border border-emerald-500/30' 
+                                : 'bg-[#141026] border border-cyan-500/20'
+                            }`}>
+                              {dailyTaskCheck ? (
+                                <Check className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-ping" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-extrabold text-slate-100 block truncate">
+                                {language === 'id' ? 'Periksa Terminal' : 'Check Status'}
+                              </span>
+                              <span className="text-[7.5px] text-slate-500 block">
+                                {language === 'id' ? 'Verifikasi kestabilan hashrate tambang' : 'Verify the stable gold mine hashrate'}
+                              </span>
+                            </div>
+                          </div>
+                          {dailyTaskCheck ? (
+                            <span className="text-[8px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-black font-mono">
+                              STABLE
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                if (isCheckingStatus) return;
+                                setIsCheckingStatus(true);
+                                setTimeout(() => {
+                                  setDailyTaskCheck(true);
+                                  setIsCheckingStatus(false);
+                                  triggerModal(
+                                    language === 'id' 
+                                      ? '⚡ Status terminal verified! Hashrate berjalan dengan stabil.' 
+                                      : '⚡ Terminal status verified! Hashrate running stable.',
+                                    'success'
+                                  );
+                                }, 1200);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500 hover:text-black text-[8px] font-bold tracking-wider transition cursor-pointer active:scale-95 shrink-0"
+                            >
+                              {isCheckingStatus ? '...' : 'CHECK'}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Task 3: Visit Market */}
+                        <div className="p-2.5 rounded-2xl bg-black/45 border border-white/5 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                              dailyTaskVisit 
+                                ? 'bg-emerald-500/10 border border-emerald-500/30' 
+                                : 'bg-[#141026] border border-cyan-500/20'
+                            }`}>
+                              {dailyTaskVisit ? (
+                                <Check className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-ping" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-extrabold text-slate-100 block truncate">
+                                {language === 'id' ? 'Kunjungi Pasar' : 'Visit Market'}
+                              </span>
+                              <span className="text-[7.5px] text-slate-500 block">
+                                {language === 'id' ? 'Lihat daftar kontrak penambangan emas' : 'Browse active gold mining contract list'}
+                              </span>
+                            </div>
+                          </div>
+                          {dailyTaskVisit ? (
+                            <span className="text-[8px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-black font-mono">
+                              VISITED
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setDailyTaskVisit(true);
+                                setCurrentTab('contract');
+                                triggerModal(
+                                  language === 'id' 
+                                    ? 'Market ditinjau! Misi kunjungan pasar berhasil.' 
+                                    : 'Market reviewed! Market visit mission successfully completed.',
+                                  'success'
+                                );
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500 hover:text-black text-[8px] font-bold tracking-wider transition cursor-pointer active:scale-95 shrink-0"
+                            >
+                              VISIT
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Claim Reward Button */}
+                      <div className="relative z-10">
+                        {dailyTaskClaimed ? (
+                          <div className="w-full py-2.5 rounded-xl text-[9px] font-black tracking-widest uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex items-center justify-center gap-1.5">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>{language === 'id' ? 'HADIAH HARIAN SUDAH DIAMBIL' : 'DAILY REWARD CLAIMED TODAY'}</span>
+                          </div>
+                        ) : (dailyTaskCheck && dailyTaskVisit) ? (
+                          <button
+                            onClick={() => {
+                              const rewardAmount = 5000;
+                              const newTx: Transaction = {
+                                id: 'DLY-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+                                type: 'reward',
+                                amount: rewardAmount,
+                                date: Date.now(),
+                                description: 'Daily Tasks Completed Reward',
+                              };
+
+                              updateState(prev => ({
+                                ...prev,
+                                mainBalance: prev.mainBalance + rewardAmount,
+                                totalEarned: prev.totalEarned + rewardAmount,
+                                transactions: [newTx, ...prev.transactions],
+                              }));
+
+                              setDailyTaskClaimed(true);
+
+                              triggerModal(
+                                language === 'id'
+                                  ? `🎁 HADIAH DIKLAIM!\n\nRp ${rewardAmount.toLocaleString('id-ID')} telah ditambahkan ke saldo utama Anda.`
+                                  : `🎁 REWARD CLAIMED!\n\nRp ${rewardAmount.toLocaleString('id-ID')} has been credited to your main balance.`,
+                                'success'
+                              );
+                            }}
+                            className="w-full py-2.5 rounded-xl text-[9.5px] font-black tracking-widest uppercase bg-gradient-to-r from-emerald-400 to-cyan-500 text-black shadow-lg shadow-emerald-500/20 hover:brightness-110 active:scale-98 transition cursor-pointer flex items-center justify-center gap-1.5 animate-pulse"
+                          >
+                            <Gift className="w-3.5 h-3.5" />
+                            <span>{language === 'id' ? 'AMBIL HADIAH Rp 5.000' : 'CLAIM Rp 5,000 REWARD'}</span>
+                          </button>
+                        ) : (
+                          <button
+                            disabled
+                            className="w-full py-2.5 rounded-xl text-[9px] font-black tracking-widest uppercase bg-white/5 text-slate-500 border border-white/5 cursor-not-allowed flex items-center justify-center gap-1.5"
+                          >
+                            <Lock className="w-3 h-3" />
+                            <span>{language === 'id' ? 'SELESAIKAN SEMUA MISI UNTUK KLAIM' : 'COMPLETE ALL TASKS TO UNLOCK'}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
                     {/* QUICK MENU GRID - PREMIUM NEAT BOXES */}
                     <div className="grid grid-cols-2 gap-2.5 mt-4 pt-4 border-t border-[#291754]/30 relative z-10">
                       {[
@@ -3080,7 +3205,7 @@ export default function App() {
                       <div className="flex-1 space-y-2.5 text-xs font-semibold">
                         <div className="flex justify-between border-b border-white/5 pb-1">
                           <span className="text-slate-400 text-[10px]">{t.earned}</span>
-                          <span className="text-white font-bold">Rp {state.totalEarned.toLocaleString('id-ID')}</span>
+                          <span className="text-white font-bold">Rp {totalEarned.toLocaleString('id-ID')}</span>
                         </div>
                         <div className="flex justify-between border-b border-white/5 pb-1">
                           <span className="text-slate-400 text-[10px]">{t.maxEarnings}</span>
@@ -3089,7 +3214,7 @@ export default function App() {
                         <div className="flex justify-between">
                           <span className="text-slate-400 text-[10px]">{t.remaining}</span>
                           <span className="text-amber-500 font-bold">
-                            Rp {Math.max(0, maxPossibleEarnings - state.totalEarned).toLocaleString('id-ID')}
+                            Rp {Math.max(0, maxPossibleEarnings - totalEarned).toLocaleString('id-ID')}
                           </span>
                         </div>
                       </div>
@@ -3098,7 +3223,7 @@ export default function App() {
                     {/* Progress Bar Footer */}
                     <div className="mt-5 pt-4 border-t border-white/5">
                       <div className="flex justify-between items-center text-[10px] text-slate-400 font-bold mb-2">
-                        <span>Rp {state.totalEarned.toLocaleString('id-ID')}</span>
+                        <span>Rp {totalEarned.toLocaleString('id-ID')}</span>
                         <span>Rp {maxPossibleEarnings.toLocaleString('id-ID')}</span>
                       </div>
                       <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden mb-4">
@@ -3130,7 +3255,7 @@ export default function App() {
                         ) : (
                           <>
                             <Coins className="w-4 h-4" />
-                            <span>{t.claimReward} (4%)</span>
+                            <span>{t.claimReward} ({(CONFIG.DAILY_REWARD_PERCENT * 100).toFixed(0)}%)</span>
                           </>
                         )}
                       </button>
@@ -3764,6 +3889,8 @@ export default function App() {
                 </div>
               )}
 
+              {/* ADMIN PANEL VIEW REMOVED FROM NESTED TABS */}
+
               {/* CONTRACT STORE VIEW */}
               {currentTab === 'contract' && (
                 <div className="space-y-4">
@@ -3811,22 +3938,22 @@ export default function App() {
                           <Coins className="w-3.5 h-3.5 text-gold-primary absolute bottom-0 right-0" />
                         </div>
                         <span className="text-[9px] text-slate-400 block mb-1">{t.price}</span>
-                        <div className="text-lg font-black text-white">Rp 180.000</div>
+                        <div className="text-lg font-black text-white">Rp {CONFIG.PRICE_PER_UNIT.toLocaleString('id-ID')}</div>
                         <span className="text-[8px] text-slate-400 uppercase font-bold">{t.perUnit}</span>
                       </div>
 
                       <div className="bg-black/25 border border-purple-500/15 rounded-2xl p-4 text-left">
                         <div className="text-center bg-purple-950/20 rounded-xl py-2 mb-3 border border-purple-500/10">
                           <span className="text-[8px] text-gold-primary font-bold block mb-0.5">CAPPING UNIT</span>
-                          <span className="text-lg font-black text-purple-300">250%</span>
+                          <span className="text-lg font-black text-purple-300">{(CONFIG.CAPPING_PERCENT * 100).toFixed(0)}%</span>
                           <div className="text-[9px] text-slate-400 font-bold mt-1">
-                            {t.maxEarnings} = Rp 450.000
+                            {t.maxEarnings} = Rp {(CONFIG.PRICE_PER_UNIT * CONFIG.CAPPING_PERCENT).toLocaleString('id-ID')}
                           </div>
                         </div>
 
                         <ul className="text-[9px] font-semibold text-slate-300 space-y-1.5 list-disc pl-3 text-left">
-                          <li>Daily Yield <strong className="text-emerald-400">4% (Rp 7.200)</strong></li>
-                          <li>Contract terminates at 250% ceiling</li>
+                          <li>Daily Yield <strong className="text-emerald-400">{(CONFIG.DAILY_REWARD_PERCENT * 100).toFixed(0)}% (Rp {(CONFIG.PRICE_PER_UNIT * CONFIG.DAILY_REWARD_PERCENT).toLocaleString('id-ID')})</strong></li>
+                          <li>Contract terminates at {(CONFIG.CAPPING_PERCENT * 100).toFixed(0)}% ceiling</li>
                           <li>Frictionless instant automated daily mining harvesting</li>
                         </ul>
                       </div>
@@ -3883,11 +4010,11 @@ export default function App() {
                         <div className="text-sm font-black text-gradient-gold">Rp {totalPortfolioValue.toLocaleString('id-ID')}</div>
                       </div>
                       <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3.5 hover:border-gold-primary/10 transition duration-300">
-                        <span className="text-[9px] text-slate-400 font-bold block mb-1">{t.dailyReward} (4%)</span>
+                        <span className="text-[9px] text-slate-400 font-bold block mb-1">{t.dailyReward} ({(CONFIG.DAILY_REWARD_PERCENT * 100).toFixed(0)}%)</span>
                         <div className="text-sm font-black text-emerald-400">Rp {dailyYield.toLocaleString('id-ID')}</div>
                       </div>
                       <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3.5 hover:border-gold-primary/10 transition duration-300">
-                        <span className="text-[9px] text-slate-400 font-bold block mb-1">{t.maxEarnings} (250%)</span>
+                        <span className="text-[9px] text-slate-400 font-bold block mb-1">{t.maxEarnings} ({(CONFIG.CAPPING_PERCENT * 100).toFixed(0)}%)</span>
                         <div className="text-sm font-black text-amber-500">Rp {maxPossibleEarnings.toLocaleString('id-ID')}</div>
                       </div>
                       <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3.5 hover:border-gold-primary/10 transition duration-300">
@@ -4258,7 +4385,7 @@ export default function App() {
                       {t.totalBalance}
                     </span>
                     <div className="text-3xl font-black text-gradient-gold font-orbitron mb-5">
-                      Rp {(state.mainBalance + state.totalEarned).toLocaleString('id-ID')}
+                      Rp {(state.mainBalance + totalEarned).toLocaleString('id-ID')}
                     </div>
 
                     <div className="grid grid-cols-2 gap-4 border-t border-white/5 pt-4">
@@ -4271,7 +4398,7 @@ export default function App() {
                       <div className="text-right">
                         <span className="text-[9px] text-slate-400 font-bold block mb-1">{t.rewardBalance}</span>
                         <div className="text-sm font-black text-gold-primary">
-                          Rp {state.totalEarned.toLocaleString('id-ID')}
+                          Rp {totalEarned.toLocaleString('id-ID')}
                         </div>
                       </div>
                     </div>
@@ -4310,19 +4437,23 @@ export default function App() {
                     <div className="space-y-3 font-semibold text-xs text-slate-300">
                       <div className="flex justify-between border-b border-white/5 pb-2">
                         <span className="text-slate-400">📊 {t.totalEarned}</span>
-                        <span className="text-white font-extrabold">Rp {(state.mainBalance + state.totalEarned).toLocaleString('id-ID')}</span>
+                        <span className="text-white font-extrabold">Rp {totalEarned.toLocaleString('id-ID')}</span>
                       </div>
                       <div className="flex justify-between border-b border-white/5 pb-2">
-                        <span className="text-slate-400">📅 {t.dailyReward} (4%)</span>
-                        <span className="text-emerald-400 font-extrabold">Rp {dailyYield.toLocaleString('id-ID')}</span>
+                        <span className="text-slate-400">⛏️ Mining Profit</span>
+                        <span className="text-emerald-400 font-extrabold">Rp {miningProfit.toLocaleString('id-ID')}</span>
                       </div>
                       <div className="flex justify-between border-b border-white/5 pb-2">
                         <span className="text-slate-400">👥 Referral Reward</span>
-                        <span className="text-amber-400 font-extrabold">Rp {state.referralEarned.toLocaleString('id-ID')}</span>
+                        <span className="text-amber-400 font-extrabold">Rp {referralReward.toLocaleString('id-ID')}</span>
+                      </div>
+                      <div className="flex justify-between border-b border-white/5 pb-2">
+                        <span className="text-slate-400">🔄 Rebate Reward</span>
+                        <span className="text-fuchsia-400 font-extrabold">Rp {rebateReward.toLocaleString('id-ID')}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-400">🔄 Rebate Reward</span>
-                        <span className="text-fuchsia-400 font-extrabold">Rp {state.rebateEarned.toLocaleString('id-ID')}</span>
+                        <span className="text-slate-400">🎁 Bonus</span>
+                        <span className="text-blue-400 font-extrabold">Rp {bonusReward.toLocaleString('id-ID')}</span>
                       </div>
                     </div>
                   </div>
@@ -4396,7 +4527,7 @@ export default function App() {
                         <span className="text-[9px] text-emerald-400 font-bold block">DAILY MINING Harvester (4%)</span>
                         <span className="text-slate-200 text-xs font-bold">PT GrockGold Daily Fleet Distribution</span>
                       </div>
-                      <span className="text-emerald-400 font-black text-sm">Rp {dailyYield.toLocaleString('id-ID')}</span>
+                      <span className="text-emerald-400 font-black text-sm">Rp {miningProfit.toLocaleString('id-ID')}</span>
                     </div>
 
                     <div className="border-l-4 border-amber-400 bg-amber-500/5 p-3 rounded-xl flex justify-between items-center">
@@ -4404,7 +4535,7 @@ export default function App() {
                         <span className="text-[9px] text-amber-400 font-bold block">REFERRAL DIRECT INCENTIVES</span>
                         <span className="text-slate-200 text-xs font-bold">Active Downline Level Rates</span>
                       </div>
-                      <span className="text-amber-400 font-black text-sm">Rp {state.referralEarned.toLocaleString('id-ID')}</span>
+                      <span className="text-amber-400 font-black text-sm">Rp {referralReward.toLocaleString('id-ID')}</span>
                     </div>
 
                     <div className="border-l-4 border-fuchsia-400 bg-fuchsia-500/5 p-3 rounded-xl flex justify-between items-center">
@@ -4412,13 +4543,21 @@ export default function App() {
                         <span className="text-[9px] text-fuchsia-400 font-bold block">REBATE LEVEL HARVEST</span>
                         <span className="text-slate-200 text-xs font-bold">Network Sales Performance Share</span>
                       </div>
-                      <span className="text-fuchsia-400 font-black text-sm">Rp {state.rebateEarned.toLocaleString('id-ID')}</span>
+                      <span className="text-fuchsia-400 font-black text-sm">Rp {rebateReward.toLocaleString('id-ID')}</span>
+                    </div>
+
+                    <div className="border-l-4 border-blue-400 bg-blue-500/5 p-3 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="text-[9px] text-blue-400 font-bold block">WELCOME BONUS</span>
+                        <span className="text-slate-200 text-xs font-bold">Registration Member Incentives</span>
+                      </div>
+                      <span className="text-blue-400 font-black text-sm">Rp {bonusReward.toLocaleString('id-ID')}</span>
                     </div>
 
                     <div className="bg-gold-primary/10 border border-gold-primary/20 rounded-2xl p-4 text-center mt-5">
                       <span className="text-[9px] text-slate-400 font-bold block uppercase">TOTAL REWARD REVENUES</span>
                       <span className="text-2xl font-black text-gradient-gold block mt-1 font-orbitron">
-                        Rp {(dailyYield + state.referralEarned + state.rebateEarned).toLocaleString('id-ID')}
+                        Rp {totalEarned.toLocaleString('id-ID')}
                       </span>
                     </div>
                   </div>
@@ -4543,6 +4682,88 @@ export default function App() {
                       {t.processDeposit}
                     </button>
                   </div>
+
+                  {/* PAYMENT CHANNELS & DETAILS */}
+                  <div className="bg-gradient-to-br from-[#0f0620] to-[#080312] border border-purple-500/15 rounded-3xl p-5 shadow-xl space-y-4">
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-2.5">
+                      <Wallet className="w-4 h-4 text-gold-primary" />
+                      <span className="text-[10px] font-black text-slate-100 uppercase tracking-widest">
+                        {language === 'id' ? 'REKENING & METODE TRANSFER RESMI' : 'OFFICIAL PAYMENT METHODS'}
+                      </span>
+                    </div>
+
+                    {/* Bank Transfer BCA Option */}
+                    <div className="p-4 bg-black/45 border border-purple-950/40 rounded-2xl space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-black bg-blue-600/25 text-blue-400 px-2 py-0.5 rounded-md uppercase">
+                          {globalConfig?.bankName || 'BCA'}
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-bold">
+                          {language === 'id' ? 'Transfer Bank' : 'Bank Transfer'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 text-[10px]">{language === 'id' ? 'Nomor Rekening:' : 'Account Number:'}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-white text-xs font-mono font-black">{globalConfig?.bankNumber || '8402-1920-22'}</span>
+                            <button
+                              onClick={handleCopyBankNumber}
+                              className="px-2 py-1 bg-white/5 hover:bg-white/10 rounded-lg text-[9px] font-extrabold text-gold-primary transition active:scale-90"
+                            >
+                              {copiedBank ? 'Copied ✓' : 'COPY'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 text-[10px]">{language === 'id' ? 'Atas Nama:' : 'Account Holder:'}</span>
+                          <span className="text-white text-xs font-bold uppercase">{globalConfig?.bankHolder || 'PT GROCKGOLD INDONESIA'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* USDT Crypto Option */}
+                    <div className="p-4 bg-black/45 border border-purple-950/40 rounded-2xl space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-black bg-emerald-600/25 text-emerald-400 px-2 py-0.5 rounded-md uppercase">
+                          USDT (TRC-20)
+                        </span>
+                        <span className="text-[9px] text-slate-400 font-bold">
+                          {language === 'id' ? 'Kripto Instan' : 'Crypto Instant'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-slate-400 text-[10px]">{language === 'id' ? 'Alamat Dompet USDT:' : 'USDT Wallet Address:'}</span>
+                          <div className="flex items-center gap-2 bg-black/40 border border-white/5 rounded-xl px-2.5 py-1.5 justify-between">
+                            <span className="text-white text-[10px] font-mono font-bold break-all select-all flex-1 pr-2">
+                              {globalConfig?.usdtAddress || 'TYrN8xZ7p8asD89xHjasDJKH190Kash18a'}
+                            </span>
+                            <button
+                              onClick={handleCopyUSDTAddress}
+                              className="px-2 py-1 bg-white/5 hover:bg-white/10 rounded-lg text-[9px] font-extrabold text-gold-primary transition shrink-0 active:scale-90"
+                            >
+                              {copiedUSDT ? 'Copied ✓' : 'COPY'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Step Instructions */}
+                    <div className="bg-amber-500/5 border border-amber-500/10 rounded-2xl p-4 text-[10px] text-amber-200/80 leading-relaxed space-y-1.5">
+                      <div className="font-extrabold text-amber-300 uppercase tracking-wider mb-1">
+                        {language === 'id' ? '⚠️ PETUNJUK TRANSFER & KONFIRMASI:' : '⚠️ TRANSFER & CONFIRMATION INSTRUCTIONS:'}
+                      </div>
+                      <p>{language === 'id' ? '1. Silakan lakukan transfer dana terlebih dahulu ke rekening bank BCA atau dompet USDT di atas.' : '1. Please transfer the funds first to the BCA Bank account or USDT wallet above.'}</p>
+                      <p>{language === 'id' ? '2. Isi nominal yang ditransfer pada form "NOMINAL DEPOSIT" di atas (Min Rp 100.000).' : '2. Fill the transferred amount in the "NOMINAL DEPOSIT" field above (Min Rp 100,000).'}</p>
+                      <p>{language === 'id' ? '3. Tekan tombol "PROSES DEPOSIT" di atas untuk mengirimkan konfirmasi bukti transfer.' : '3. Press the "PROCESS DEPOSIT" button above to submit your transfer confirmation.'}</p>
+                      <p>{language === 'id' ? '4. Tim Admin akan memproses dan mengaktifkan saldo Anda dalam waktu 1-10 menit setelah verifikasi.' : '4. Admin Team will verify and activate your balance within 1-10 minutes.'}</p>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -4569,93 +4790,97 @@ export default function App() {
                     </div>
 
                     <div className="text-lg font-black text-white uppercase">{currentAccount ? currentAccount.fullName : state.username}</div>
-                    <div className="text-xs text-purple-300 font-mono mt-0.5">ID: {currentAccount ? currentAccount.referralCode : 'GGM-ADMIN001'}</div>
+                    {state.username.toLowerCase() !== 'admin' && (
+                      <div className="text-xs text-purple-300 font-mono mt-0.5">ID: {currentAccount ? currentAccount.referralCode : 'GGM-0001'}</div>
+                    )}
                   </div>
 
                   {/* Referral Box Section */}
-                  <div className="bg-gradient-to-br from-[#0f0620] to-[#080312] border border-purple-500/20 rounded-3xl p-5 shadow-xl relative overflow-hidden space-y-4">
-                    <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl pointer-events-none" />
-                    
-                    <div className="relative">
-                      <div className="flex justify-between items-center mb-1.5">
-                        <span className="text-[10px] font-black text-gold-primary uppercase tracking-wider">
-                          {language === 'id' ? 'Kode Referral Anda' : 'Your Referral Code'}
-                        </span>
-                      </div>
-                      <div className="flex gap-2">
-                        <div className="flex-1 bg-black/40 border border-purple-900/30 rounded-2xl px-4 py-3 text-sm font-mono font-bold text-slate-100 flex items-center justify-between">
-                          <span>{currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase())}</span>
-                          <button
-                            onClick={handleCopyCode}
-                            className="text-gold-primary hover:text-yellow-300 transition text-xs font-extrabold flex items-center gap-1 cursor-pointer active:scale-95"
-                          >
-                            {copiedCode ? (
-                              <span className="text-emerald-400 font-bold">Copied ✓</span>
-                            ) : (
-                              <>
-                                <Check className="w-3.5 h-3.5" />
-                                <span>COPY</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="bg-[#120824] border border-purple-500/15 rounded-2xl p-4 relative overflow-hidden shadow-inner">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <span className="text-[10px] font-extrabold text-purple-300 uppercase tracking-widest block">
-                            {language === 'id' ? 'Tautan Referral Resmi' : 'Official Referral Link'}
+                  {state.username.toLowerCase() !== 'admin' && (
+                    <div className="bg-gradient-to-br from-[#0f0620] to-[#080312] border border-purple-500/20 rounded-3xl p-5 shadow-xl relative overflow-hidden space-y-4">
+                      <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl pointer-events-none" />
+                      
+                      <div className="relative">
+                        <div className="flex justify-between items-center mb-1.5">
+                          <span className="text-[10px] font-black text-gold-primary uppercase tracking-wider">
+                            {language === 'id' ? 'Kode Referral Anda' : 'Your Referral Code'}
                           </span>
                         </div>
-                        
-                        <button
-                          onClick={handleCopyLink}
-                          className={`absolute top-3.5 right-3.5 px-3 py-1.5 rounded-xl text-[10px] font-black tracking-wider uppercase transition-all duration-200 cursor-pointer active:scale-90 flex items-center gap-1 ${
-                            copiedLink 
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-                              : 'bg-gradient-to-r from-yellow-400 via-gold-primary to-yellow-600 text-black shadow-md hover:brightness-110'
-                          }`}
-                        >
-                          <span className="font-bold text-xs">📋</span>
-                          <span>{copiedLink ? (language === 'id' ? 'Copied ✓' : 'Copied ✓') : (language === 'id' ? 'Copy' : 'Copy')}</span>
-                        </button>
-                      </div>
-
-                      <div className="mt-4 pt-1">
-                        <div className="w-full bg-black/50 border border-purple-950/40 rounded-xl px-3 py-2.5 text-[10px] font-mono text-slate-300 break-all select-all leading-relaxed pr-16 shadow-inner">
-                          {`${window.location.origin}/register?ref=${currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase())}`}
+                        <div className="flex gap-2">
+                          <div className="flex-1 bg-black/40 border border-purple-900/30 rounded-2xl px-4 py-3 text-sm font-mono font-bold text-slate-100 flex items-center justify-between">
+                            <span>{currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase())}</span>
+                            <button
+                              onClick={handleCopyCode}
+                              className="text-gold-primary hover:text-yellow-300 transition text-xs font-extrabold flex items-center gap-1 cursor-pointer active:scale-95"
+                            >
+                              {copiedCode ? (
+                                <span className="text-emerald-400 font-bold">Copied ✓</span>
+                              ) : (
+                                <>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>COPY</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <button
-                      onClick={() => {
-                        const refCodeStr = currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase());
-                        const shareUrl = `${window.location.origin}/register?ref=${refCodeStr}`;
-                        const shareText = language === 'id' 
-                          ? `Bergabunglah dengan sistem penambangan PT GrockGold menggunakan kode ${refCodeStr} dan hasilkan yield harian hingga 4%! ${shareUrl}`
-                          : `Join the PT GrockGold mining system with code ${refCodeStr} and earn up to 4% daily contract yield! ${shareUrl}`;
-                        
-                        setSharedReferral(true);
-                        if (navigator.share) {
-                          navigator.share({
-                            title: 'GrockGold Mining',
-                            text: shareText,
-                            url: shareUrl,
-                          }).catch(() => {});
-                        } else {
-                          navigator.clipboard.writeText(shareText);
-                          triggerModal(language === 'id' ? '✅ Teks berbagi disalin ke clipboard!' : '✅ Share text copied to clipboard!', 'success');
-                        }
-                      }}
-                      className="w-full py-4 bg-gradient-to-r from-yellow-300 via-gold-primary to-yellow-600 text-black font-extrabold rounded-2xl text-xs tracking-wider uppercase transition shadow-lg hover:brightness-110 active:scale-98 cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>{language === 'id' ? 'BAGIKAN REFERRAL' : 'SHARE REFERRAL'}</span>
-                    </button>
-                  </div>
+                      <div className="bg-[#120824] border border-purple-500/15 rounded-2xl p-4 relative overflow-hidden shadow-inner">
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <span className="text-[10px] font-extrabold text-purple-300 uppercase tracking-widest block">
+                              {language === 'id' ? 'Tautan Referral Resmi' : 'Official Referral Link'}
+                            </span>
+                          </div>
+                          
+                          <button
+                            onClick={handleCopyLink}
+                            className={`absolute top-3.5 right-3.5 px-3 py-1.5 rounded-xl text-[10px] font-black tracking-wider uppercase transition-all duration-200 cursor-pointer active:scale-90 flex items-center gap-1 ${
+                              copiedLink 
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                                : 'bg-gradient-to-r from-yellow-400 via-gold-primary to-yellow-600 text-black shadow-md hover:brightness-110'
+                            }`}
+                          >
+                            <span className="font-bold text-xs">📋</span>
+                            <span>{copiedLink ? (language === 'id' ? 'Copied ✓' : 'Copied ✓') : (language === 'id' ? 'Copy' : 'Copy')}</span>
+                          </button>
+                        </div>
+
+                        <div className="mt-4 pt-1">
+                          <div className="w-full bg-black/50 border border-purple-950/40 rounded-xl px-3 py-2.5 text-[10px] font-mono text-slate-300 break-all select-all leading-relaxed pr-16 shadow-inner">
+                            {`${window.location.origin}/register?ref=${currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase())}`}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          const refCodeStr = currentAccount?.referralCode || ('GGM-' + state.username.toUpperCase());
+                          const shareUrl = `${window.location.origin}/register?ref=${refCodeStr}`;
+                          const shareText = language === 'id' 
+                            ? `Bergabunglah dengan sistem penambangan PT GrockGold menggunakan kode ${refCodeStr} dan hasilkan yield harian hingga 4%! ${shareUrl}`
+                            : `Join the PT GrockGold mining system with code ${refCodeStr} and earn up to 4% daily contract yield! ${shareUrl}`;
+                          
+                          setSharedReferral(true);
+                          if (navigator.share) {
+                            navigator.share({
+                              title: 'GrockGold Mining',
+                              text: shareText,
+                              url: shareUrl,
+                            }).catch(() => {});
+                          } else {
+                            navigator.clipboard.writeText(shareText);
+                            triggerModal(language === 'id' ? '✅ Teks berbagi disalin ke clipboard!' : '✅ Share text copied to clipboard!', 'success');
+                          }
+                        }}
+                        className="w-full py-4 bg-gradient-to-r from-yellow-300 via-gold-primary to-yellow-600 text-black font-extrabold rounded-2xl text-xs tracking-wider uppercase transition shadow-lg hover:brightness-110 active:scale-98 cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>{language === 'id' ? 'BAGIKAN REFERRAL' : 'SHARE REFERRAL'}</span>
+                      </button>
+                    </div>
+                  )}
 
                   {/* Accordion / Tab Options */}
                   <div className="space-y-3">
@@ -4683,14 +4908,18 @@ export default function App() {
                           <span className="text-slate-500">{language === 'id' ? 'No. Handphone' : 'Phone Number'}</span>
                           <span className="text-white">{currentAccount ? currentAccount.phone : '+6281234567890'}</span>
                         </div>
-                        <div className="flex justify-between py-1 border-b border-white/5">
-                          <span className="text-slate-500">Uplink Sponsor</span>
-                          <span className="text-amber-400 font-bold uppercase">{currentAccount?.invitedBy ? currentAccount.invitedBy : 'SYSTEM'}</span>
-                        </div>
-                        <div className="flex justify-between py-1 font-mono">
-                          <span className="text-slate-500">Referral Code</span>
-                          <span className="text-gold-primary font-bold">{currentAccount ? currentAccount.referralCode : 'GGM-KENALA'}</span>
-                        </div>
+                        {state.username.toLowerCase() !== 'admin' && (
+                          <>
+                            <div className="flex justify-between py-1 border-b border-white/5">
+                              <span className="text-slate-500">Uplink Sponsor</span>
+                              <span className="text-amber-400 font-bold uppercase">{currentAccount?.invitedBy ? currentAccount.invitedBy : 'SYSTEM'}</span>
+                            </div>
+                            <div className="flex justify-between py-1 font-mono">
+                              <span className="text-slate-500">Referral Code</span>
+                              <span className="text-gold-primary font-bold">{currentAccount ? currentAccount.referralCode : 'GGM-0001'}</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -4761,7 +4990,7 @@ export default function App() {
                         {/* Auto Reinvest Toggle */}
                         <div className="flex items-center justify-between p-2 rounded-xl bg-black/30 border border-white/5">
                           <div className="flex flex-col text-left">
-                            <span className="text-xs">Auto Reinvest (Rp 180k)</span>
+                            <span className="text-xs">Auto Reinvest (Rp {(CONFIG.PRICE_PER_UNIT / 1000).toLocaleString('id-ID')}k)</span>
                             <span className="text-[8px] text-slate-400 font-medium">Beli kontrak otomatis dari hasil tambang</span>
                           </div>
                           <button
@@ -5015,7 +5244,7 @@ export default function App() {
                       {/* Auto Reinvest Toggle */}
                       <div className="flex items-center justify-between p-3 rounded-2xl bg-black/30 border border-white/5">
                         <div className="flex flex-col text-left">
-                          <span className="text-xs">Auto Reinvest (Rp 180k)</span>
+                          <span className="text-xs">Auto Reinvest (Rp {(CONFIG.PRICE_PER_UNIT / 1000).toLocaleString('id-ID')}k)</span>
                           <span className="text-[8px] text-slate-400 font-medium">Beli kontrak otomatis dari hasil tambang</span>
                         </div>
                         <button
@@ -5867,21 +6096,51 @@ export default function App() {
                     );
                   })}
                 </div>
+
+                {/* Previously Completed Missions Section */}
+                <div className="mt-4 pt-3.5 border-t border-cyan-500/15">
+                  <div className="text-[9px] font-black text-cyan-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                    {language === 'id' ? 'RIWAYAT MISI SELESAI' : 'COMPLETED MISSIONS HISTORY'}
+                  </div>
+                  <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+                    {claimedMissionsHistory.map((item) => (
+                      <div key={item.id} className="p-2 rounded-xl bg-[#080d19]/80 border border-emerald-500/10 flex justify-between items-center gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[9.5px] font-extrabold text-slate-200 truncate">{item.title}</div>
+                          <div className="text-[7px] text-slate-500 font-bold font-mono mt-0.5">
+                            {new Date(item.timestamp).toLocaleString('id-ID')}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-[9px] font-black text-emerald-400 font-mono">+Rp {item.reward.toLocaleString('id-ID')}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {claimedMissionsHistory.length === 0 && (
+                      <div className="text-[8.5px] text-slate-500 text-center py-3 italic">
+                        {language === 'id' ? 'Belum ada misi yang diselesaikan.' : 'No missions completed yet.'}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </motion.div>
             </div>
           )}
         </AnimatePresence>
 
-        {/* CUSTOM GLOBAL DIALOG COMPONENT */}
-        <Modal
-          isOpen={modalOpen}
-          message={modalMessage}
-          type={modalType}
-          showConfirm={modalShowConfirm}
-          onConfirm={modalOnConfirm}
-          onClose={() => setModalOpen(false)}
-        />
-      </div>
+        </div>
+      )}
+
+      {/* CUSTOM GLOBAL DIALOG COMPONENT */}
+      <Modal
+        isOpen={modalOpen}
+        message={modalMessage}
+        type={modalType}
+        showConfirm={modalShowConfirm}
+        onConfirm={modalOnConfirm}
+        onClose={() => setModalOpen(false)}
+      />
     </div>
   );
 }

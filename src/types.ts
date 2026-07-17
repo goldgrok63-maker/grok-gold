@@ -34,7 +34,6 @@ export interface UserAccount {
   referralCode: string; // User's personal invite code
   invitedBy: string | null; // Referrer's username
   createdAt: number;
-  role: 'admin' | 'user'; // Added role field
   state: AppState;
   settings: {
     language: 'id' | 'en';
@@ -67,15 +66,6 @@ export interface AppState {
   goldProductionWeekly?: number; // Added for weekly tracking
   goldProductionMonthly?: number; // Added for monthly tracking
   lastGoldUpdateTime?: number; // Last time gold stats were updated
-}
-
-export interface AdminActivityLog {
-  id: string;
-  username: string;
-  action: string;
-  details: string;
-  timestamp: number;
-  ipAddress?: string;
 }
 
 export const CONFIG = {
